@@ -10,7 +10,6 @@ from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 import pickle
 import hashlib
-from multiprocessing import Pool
 
 load_dotenv()
 os.getenv("GOOGLE_API_KEY")
@@ -24,13 +23,6 @@ def extract_text_from_pdf(file_path):
     except Exception as e:
         st.error(f"Error processing '{file_path}': {str(e)}")
         return ""
-
-@st.cache_data
-def process_pdfs_in_parallel(pdf_files):
-    with Pool() as pool:
-        texts = pool.map(extract_text_from_pdf, pdf_files)
-    combined_text = ''.join(texts)
-    return combined_text
 
 @st.cache_data
 def get_pdf_text_from_resources():
@@ -52,7 +44,13 @@ def get_pdf_text_from_resources():
         with open(cache_file, 'rb') as f:
             return pickle.load(f)
 
-    combined_text = process_pdfs_in_parallel(pdf_files)
+    combined_text = ""
+    progress_bar = st.progress(0)
+    for i, pdf_file in enumerate(pdf_files):
+        text = extract_text_from_pdf(pdf_file)
+        combined_text += text
+        progress = (i + 1) / len(pdf_files)
+        progress_bar.progress(progress)
 
     if not combined_text:
         st.warning("No text could be extracted from any of the PDF files.")
@@ -78,10 +76,16 @@ def build_or_load_vector_store(text_chunks):
     chunks_hash = hashlib.md5(''.join(text_chunks).encode()).hexdigest()
     vector_store_file = f"vector_store_{chunks_hash}.pkl"
 
+    # Attempt to load the vector store
     if os.path.exists(vector_store_file):
-        with open(vector_store_file, 'rb') as f:
-            return pickle.load(f)
+        try:
+            with open(vector_store_file, 'rb') as f:
+                return pickle.load(f)
+        except (pickle.UnpicklingError, EOFError, AttributeError) as e:
+            st.warning(f"Failed to load cached vector store: {e}")
+            os.remove(vector_store_file)  # Remove the corrupted file
 
+    # Generate and save a new vector store if loading fails
     embeddings = get_embeddings()
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
 
@@ -93,11 +97,11 @@ def build_or_load_vector_store(text_chunks):
 @st.cache_resource
 def get_conversational_chain():
     prompt_template = """
-    Context:\n{context}\n
-    Question:\n{question}\n
-    Audience:\n{audience}\n
+    Context:\n {context}?\n
+    Question: \n{question}\n
+    Audience: \n{audience}\n
 
-    Provide a concise and suitable answer for the audience.
+    Please provide an answer suitable for the specified audience.
 
     Answer:
     """
@@ -118,16 +122,16 @@ def user_input(user_question, audience, vector_store):
 
 def format_response(response, audience):
     if audience == "Space Science for Kids":
-        return f"🚀✨ {response} \n\nWant to know more? Ask another question!"
+        return f"\ud83d\ude80\u2728 {response} \n\nWant to know more? Ask another question!"
     elif audience == "Space Science for Student":
-        return f"🔭📚 {response} \n\nReferences available upon request."
+        return f"\ud83d\udd2d\ud83d\udcda {response} \n\nReferences available upon request."
     elif audience == "Space Science for Professional":
-        return f"📊🌌 {response} \n\nPeer-reviewed sources available in citations."
+        return f"\ud83d\udcca\ud83c\udf0c {response} \n\nPeer-reviewed sources available in citations."
     return response
 
 def main():
     st.set_page_config("Space Science Chatbot")
-    st.title("🌌 Space Science Chatbot")
+    st.title("\ud83c\udf0c Space Science Chatbot")
     st.subheader("Explore the cosmos at your level!")
 
     audience = st.selectbox(
@@ -147,7 +151,7 @@ def main():
         text_chunks = get_text_chunks(raw_text)
         st.write(f"Number of text chunks created: {len(text_chunks)}")
 
-        st.write("Loading or creating vector store...")
+        st.write("Creating vector store...")
         vector_store = build_or_load_vector_store(text_chunks)
 
     st.success("PDFs processed successfully!")
